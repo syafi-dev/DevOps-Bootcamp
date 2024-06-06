@@ -1,0 +1,172 @@
+---
+- hosts: webservers
+  become: yes
+#  become_user: root
+  remote_user: ubuntu
+
+
+  vars:
+    mysql_root_password: 'root_passwd'
+    wordpress_db_name: 'wordpress'
+    wordpress_db_user: 'wp_user'
+    wordpress_db_password: 'wp_passwd'
+    server_domain_or_ip: 'ec2-47-128-76-97.ap-southeast-1.compute.amazonaws.com'
+
+  tasks:
+    - name: Update apt package lists
+      apt:
+        update_cache: yes
+
+    - name: Install necessary packages
+      apt:
+        name:
+          - curl
+          - software-properties-common
+        state: present
+
+    - name: Install Nginx
+      apt:
+        name:
+          - nginx
+        state: present
+
+    - name: Ensure Nginx is running and enabled on boot
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+        
+    - name: Install PHP
+      apt:
+        name:
+          - php-fpm
+          - php-mysql
+          - php-cli
+          - php-curl
+          - php-gd
+          - php-mbstring
+          - php-xml
+          - php-xmlrpc
+          - php-zip
+        state: present
+
+    - name: Ensure Python 3 is used by Ansible
+      set_fact:
+        ansible_python_interpreter: /usr/bin/python3
+
+    - name: Install MySQL client for Python 3
+      package:
+        name: python3-pymysql
+        state: present
+
+    - name: Install MariaDB Server
+      apt:
+        name: mariadb-server
+        state: present
+
+    - name: Ensure MariaDB is running and enabled on boot
+      service:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    - name: Install expect package
+      package:
+        name: expect
+        state: present
+
+    - name: Run mysql_secure_installation script
+      expect:
+        command: mysql_secure_installation
+        responses:
+          'Enter current password for root \(enter for none\):': "{{ mysql_root_password }}"
+          'Switch to unix_socket authentication \[Y/n\]': 'Y'
+          'Change the root password\? \[Y/n\]': 'Y'
+          'New password: ': "{{ mysql_root_password }}"
+          'Re-enter new password: ': "{{ mysql_root_password }}"
+          'Remove anonymous users\? \[Y/n\]': 'Y'
+          'Disallow root login remotely\? \[Y/n\]': 'Y'
+          'Remove test database and access to it\? \[Y/n\]': 'Y'
+          'Reload privilege tables now\? \[Y/n\]': 'Y'
+
+    - name: Create WordPress database
+      mysql_db:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        name: "{{ wordpress_db_name }}"
+        state: present
+
+    - name: Create WordPress user
+      mysql_user:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        name: "{{ wordpress_db_user }}"
+        password: "{{ wordpress_db_password }}"
+        priv: "{{ wordpress_db_name }}.*:ALL"
+        state: present
+
+    - name: Download WordPress
+      get_url:
+        url: https://wordpress.org/latest.tar.gz
+        dest: /tmp/wordpress.tar.gz
+
+    - name: Extract WordPress
+      unarchive:
+        src: /tmp/wordpress.tar.gz
+        dest: /var/www/
+        remote_src: yes
+
+    - name: Set proper ownership
+      file:
+        path: /var/www/wordpress
+        owner: www-data
+        group: www-data
+        state: directory
+        recurse: yes
+
+    - name: Create Nginx configuration for WordPress
+      copy:
+        dest: /etc/nginx/sites-available/wordpress.conf
+        content: |
+          server {
+              listen 80;
+              server_name {{ server_domain_or_ip }};
+              root /var/www/wordpress;
+              index index.php index.html index.htm;
+
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
+
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+              }
+
+              location ~ /\.ht {
+                  deny all;
+              }
+
+              error_log /var/log/nginx/wordpress_error.log;
+              access_log /var/log/nginx/wordpress_access.log;
+          }
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Add server_names_hash_bucket_size directive to nginx.conf
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        insertafter: '^http {'
+        line: '       server_names_hash_bucket_size 128;'
+
+    - name: enable nginx site
+      command: ln -s /etc/nginx/sites-available/wordpress.conf /etc/nginx/sites-enabled/
+      notify:
+        - reload nginx
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
