@@ -1,0 +1,158 @@
+--- 
+- hosts: webserver
+  become: yes
+  remote_user: ubuntu
+
+  vars:
+    mysql_root_password: 'root_passwd'
+    wordpress_db_name: 'wordpress'
+    wordpress_db_user: 'wp_user'
+    wordpress_db_password: 'wp_passwd'
+    domain_name: 'ec2-13-229-76-194.ap-southeast-1.compute.amazonaws.com'
+
+  tasks:
+    - name: Update operating system
+      apt:
+        update_cache: yes
+
+    - name: Install necessary package
+      apt:
+        name:
+          - curl
+          - wget
+          - software-properties-common
+        state: present
+
+    - name: Install Apache
+      apt:
+        name:
+          - apache2
+          - libapache2-mod-php
+        state: present
+
+    - name: Ensure Apache is running enable on boot
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Install PHP
+      apt:  
+        name:
+          - php-mysql
+          - php-curl
+          - php-cli
+          - php-gd
+          - php-mbstring
+          - php-xml
+          - php-xmlrpc
+          - php-zip
+        state: present
+
+    - name: Install MariaDB
+      apt:
+        name:
+        - mariadb-server
+        state: present
+
+    - name: Ensure Mariadb is running enable on boot
+      service:
+        name: mariadb
+        state: started
+        enabled: yes 
+
+    - name: Install MySQL client for Python 3
+      package:
+        name: python3-pymysql
+        state: present
+
+    - name: Install Expect package
+      package:
+        name: expect
+        state: present
+
+    - name: Run mysql_secure_installation script
+      expect:
+        command: mysql_secure_installation
+        responses:
+          'Enter current password for root \(enter for none\):': "{{ mysql_root_password }}"
+          'Switch to unix_socket authentication \[Y/n\]': 'Y'
+          'Change the root password\? \[Y/n\]': 'Y'
+          'New password: ': "{{ mysql_root_password }}"
+          'Re-enter new password: ': "{{ mysql_root_password }}"
+          'Remove anonymous users\? \[Y/n\]': 'Y'
+          'Disallow root login remotely\? \[Y/n\]': 'Y'
+          'Remove test database and access to it\? \[Y/n\]': 'Y'
+          'Reload privilege tables now\? \[Y/n\]': 'Y'
+
+    - name: Create Wordpress database
+      mysql_db:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        name: "{{ wordpress_db_name }}"
+        state: present
+
+    - name: Create Wordpress users
+      mysql_user:
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        name: "{{ wordpress_db_user }}"
+        password: "{{ wordpress_db_password }}"
+        priv: "{{ wordpress_db_name }}.*:ALL"
+        state: present
+
+    - name: Download Wordpress 
+      get_url:
+        url: https://wordpress.org/latest.tar.gz
+        dest: /tmp/wordpress.tar.gz
+
+    - name: Extract Wordpress 
+      unarchive:
+        src: /tmp/wordpress.tar.gz
+        dest: /var/www
+        remote_src: yes
+
+    - name: Set proper ownership
+      file:
+        path: /var/www/wordpress
+        owner: www-data
+        group: www-data
+        state: directory
+        recurse: yes
+
+    - name: Create Apache configuration for WordPress
+      copy:
+        dest: /etc/apache2/sites-available/wordpress.conf
+        content: |
+          <VirtualHost *:80>
+              ServerAdmin admin@example.com
+              DocumentRoot /var/www/wordpress
+              ServerName {{ domain_name }}
+              ServerAlias www.{{ domain_name }}
+
+              <Directory /var/www/wordpress/>
+                  Options Indexes FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+
+              ErrorLog ${APACHE_LOG_DIR}/error.log
+              CustomLog ${APACHE_LOG_DIR}/access.log combined
+          </VirtualHost>
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Enable the wordpress website
+      command: a2ensite wordpress.conf 
+      notify:
+      - restart apache2
+
+  handlers:
+  - name: restart apache2
+    service:
+      name: apache2
+      state: restarted
+
+        
+        

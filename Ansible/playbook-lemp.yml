@@ -10,7 +10,7 @@
     wordpress_db_name: 'wordpress'
     wordpress_db_user: 'wp_user'
     wordpress_db_password: 'wp_passwd'
-    server_domain_or_ip: 'ec2-13-214-210-170.ap-southeast-1.compute.amazonaws.com'
+    server_domain_or_ip: 'ec2-47-128-76-97.ap-southeast-1.compute.amazonaws.com'
 
   tasks:
     - name: Update apt package lists
@@ -22,8 +22,24 @@
         name:
           - curl
           - software-properties-common
-          - apache2
-          - libapache2-mod-php
+        state: present
+
+    - name: Install Nginx
+      apt:
+        name:
+          - nginx
+        state: present
+
+    - name: Ensure Nginx is running and enabled on boot
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+        
+    - name: Install PHP
+      apt:
+        name:
+          - php-fpm
           - php-mysql
           - php-cli
           - php-curl
@@ -42,12 +58,6 @@
       package:
         name: python3-pymysql
         state: present
-
-    - name: Ensure Apache is running and enabled on boot
-      service:
-        name: apache2
-        state: started
-        enabled: yes
 
     - name: Install MariaDB Server
       apt:
@@ -114,36 +124,49 @@
         state: directory
         recurse: yes
 
-    - name: Create Apache configuration for WordPress
+    - name: Create Nginx configuration for WordPress
       copy:
-        dest: /etc/apache2/sites-available/wordpress.conf
+        dest: /etc/nginx/sites-available/wordpress.conf
         content: |
-          <VirtualHost *:80>
-              ServerAdmin admin@example.com
-              DocumentRoot /var/www/wordpress
-              ServerName {{ server_domain_or_ip }}
-              ServerAlias www.{{ server_domain_or_ip }}
+          server {
+              listen 80;
+              server_name {{ server_domain_or_ip }};
+              root /var/www/wordpress;
+              index index.php index.html index.htm;
 
-              <Directory /var/www/wordpress/>
-                  Options Indexes FollowSymLinks
-                  AllowOverride All
-                  Require all granted
-              </Directory>
+              location / {
+                  try_files $uri $uri/ /index.php?$args;
+              }
 
-              ErrorLog ${APACHE_LOG_DIR}/error.log
-              CustomLog ${APACHE_LOG_DIR}/access.log combined
-          </VirtualHost>
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
+              }
+
+              location ~ /\.ht {
+                  deny all;
+              }
+
+              error_log /var/log/nginx/wordpress_error.log;
+              access_log /var/log/nginx/wordpress_access.log;
+          }
         owner: root
         group: root
         mode: '0644'
 
-    - name: Enable the wordpresss website
-      command: a2ensite wordpress.conf
+    - name: Add server_names_hash_bucket_size directive to nginx.conf
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        insertafter: '^http {'
+        line: '       server_names_hash_bucket_size 128;'
+
+    - name: enable nginx site
+      command: ln -s /etc/nginx/sites-available/wordpress.conf /etc/nginx/sites-enabled/
       notify:
-      - restart apache
+        - reload nginx
 
   handlers:
-    - name: restart apache
+    - name: reload nginx
       service:
-        name: apache2
-        state: restarted
+        name: nginx
+        state: reloaded
